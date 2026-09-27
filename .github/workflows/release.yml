@@ -1,0 +1,258 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: crt-bridge client release
+
+# Triggered by a version tag pushed to this repository (job `meta` validates
+# it against the source), or manually for a build-only smoke test.
+# `workflow_dispatch` never creates a release or a tag -- see job `publish`.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version to stamp, e.g. v0.1.0. A manual run only uploads build
+          artifacts, it never creates a release.
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crt-bridge-client-release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The version is only ever read via $VERSION inside scripts, never
+# interpolated directly into a run: block -- see the `meta` job below.
+env:
+  VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+
+jobs:
+  meta:
+    name: Validate the tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate version and ancestry
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION '$VERSION' does not match v<major>.<minor>.<patch>"
+            exit 1
+          fi
+
+          actual="$(make -s print-version)"
+          if [ "$actual" != "${VERSION#v}" ]; then
+            echo "::error::tag '$VERSION' does not match the source version '$actual'"
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::commit $GITHUB_SHA is not an ancestor of origin/main"
+            exit 1
+          fi
+
+  windows:
+    name: Build Windows x64
+    needs: meta
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: base-devel mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils mingw-w64-x86_64-python
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test
+
+      - name: Frozen-run smoke test
+        run: make test-frozen-run
+
+      - name: Check the retro_init export
+        run: |
+          set -euo pipefail
+          # Written to a file, never piped straight into grep: a pipe's
+          # reader can close early and turn the writer's next write into a
+          # SIGPIPE under `pipefail`, which would fail this step for a
+          # reason unrelated to the actual check.
+          objdump -p build/crt_bridge_libretro.dll > exports.txt
+          grep 'retro_init' exports.txt >/dev/null
+
+      - name: Build and check the release archive
+        run: |
+          set -euo pipefail
+          python check-release.py archive --platform windows --version "$VERSION" \
+            --build-dir build --docs-dir . --out-dir dist --objdump "$(command -v objdump)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    name: Build Linux x64
+    needs: meta
+    runs-on: ubuntu-latest
+    container:
+      image: debian:12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Before checkout: without git in the container, actions/checkout
+      # cannot run at all.
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential git ca-certificates python3 binutils
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: make
+
+      - name: Unit tests
+        run: make test
+
+      - name: Frozen-run smoke test
+        run: make test-frozen-run
+
+      - name: Check the retro_init symbol
+        run: |
+          set -euo pipefail
+          nm -D --defined-only build/crt_bridge_libretro.so > syms.txt
+          grep ' retro_init$' syms.txt >/dev/null
+
+      - name: Build and check the release archive
+        run: |
+          set -euo pipefail
+          python3 check-release.py archive --platform linux --version "$VERSION" \
+            --build-dir build --docs-dir . --out-dir dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-x64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS universal
+    needs: meta
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: make
+
+      - name: Check both slices are present
+        run: |
+          set -euo pipefail
+          lipo -archs build/crt_bridge_libretro.dylib > archs.txt
+          grep -w arm64 archs.txt >/dev/null
+          grep -w x86_64 archs.txt >/dev/null
+
+      # The x86_64 slice built above is not exercised on real Intel
+      # hardware here: this runner is Apple Silicon, and the tests below
+      # only run the arm64 slice the runner itself can execute.
+      - name: Unit tests
+        run: make test
+
+      - name: Frozen-run smoke test
+        run: make test-frozen-run
+
+      - name: Ad hoc code signing
+        run: |
+          set -euo pipefail
+          codesign --force --sign - build/crt_bridge_libretro.dylib
+          codesign --verify build/crt_bridge_libretro.dylib
+
+      - name: Check the retro_init symbol
+        run: |
+          set -euo pipefail
+          nm -gU build/crt_bridge_libretro.dylib > syms.txt
+          grep ' _retro_init$' syms.txt >/dev/null
+
+      - name: Build and check the release archive
+        run: |
+          set -euo pipefail
+          python3 check-release.py archive --platform macos --version "$VERSION" \
+            --build-dir build --docs-dir . --out-dir dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-universal
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish draft release
+    needs: [meta, windows, linux, macos]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          sed "s/@VERSION@/$VERSION/g" release-notes.md.in > notes.md
+          (cd dist && sha256sum crt-bridge-client-"$VERSION"-*) | sed 's/^/    /' >> notes.md
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            "dist/crt-bridge-client-$VERSION-windows-x64.zip" \
+            "dist/crt-bridge-client-$VERSION-linux-x64.tar.gz" \
+            "dist/crt-bridge-client-$VERSION-macos-universal.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --prerelease \
+            --title "crt-bridge client $VERSION" \
+            --notes-file notes.md

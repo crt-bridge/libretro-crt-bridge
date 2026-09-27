@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+display_name = "crt-bridge client"
+authors = "crt-bridge"
+supported_extensions = ""
+corename = "crt-bridge client"
+categories = "Streaming receiver"
+license = "GPLv3+"
+permissions = ""
+display_version = "@VERSION@"
+supports_no_game = "true"
+description = "Receives the video, audio and gamepad stream of a crt-bridge emitter over the local network and plays it on this machine; this machine's gamepad goes back to the emitter. Based on the Groovy protocol by psakhis. Not affiliated with the libretro project."
