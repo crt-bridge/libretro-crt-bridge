@@ -9,7 +9,8 @@ emitter. Two computers are enough.
 `crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.1
 
 The emitter is pointed at this machine's address. Compatibility with other Groovy senders is
-not claimed.
+not claimed. Proven end-to-end (video, audio, gamepad) on Windows, Linux and macOS (Apple
+Silicon), against that emitter release, and nothing more.
 
 ## Install
 
@@ -37,6 +38,14 @@ tunnel (WireGuard, Tailscale); never expose its UDP ports to the internet.
   hardware.
 - Windows binaries are unsigned; macOS binaries are signed ad hoc, not notarized: expect a
   security warning on first launch, see `INSTALL.md`.
+- Running the emitter and this client on the same Windows PC: set this core's audio driver to
+  `xaudio`, not the default `wasapi`, or the emitter can lose its own sound and run far faster
+  than its content's native rate.
+- A Wi-Fi connection can lose most of this machine's sound while the picture keeps arriving:
+  use a wired connection instead when you can; a future emitter release is expected to fix this.
+- Restarting this client while the emitter's content keeps running does not always bring back
+  sound and the gamepad on their own: restart the content on the emitter too if they do not
+  return.
 
 ## Build from source
 

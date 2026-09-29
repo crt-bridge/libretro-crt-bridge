@@ -81,31 +81,53 @@ RetroArch's core list under its file name (`crt_bridge_libretro`) instead of
 
 ### Linux
 
+Distribution packages vary more here than on Windows or macOS. Some point `Cores` and
+`Core Info` at folders under your own home directory - the "typical" paths named below. Others,
+including Debian's and Ubuntu's `retroarch` package, point both at system folders instead (for
+example `/usr/lib/x86_64-linux-gnu/libretro/` and `/usr/share/libretro/info/`), which your normal
+user account cannot write to. Read both paths from RetroArch's own settings before copying
+anything; if either points at a folder you cannot write to, change it first, in
+`Settings > Directory > Cores` and `Settings > Directory > Core Info`, to a folder of your own
+(for example, a folder under `~/.config/retroarch/`).
+
 1. Extract `crt_bridge_libretro.so` and `crt_bridge_libretro.info` from the tar.gz archive.
 2. Copy `crt_bridge_libretro.so` into the folder shown under `Settings > Directory > Cores`
-   (typically `~/.config/retroarch/cores/`).
+   (typically `~/.config/retroarch/cores/` - see above if your package points elsewhere).
 3. Copy `crt_bridge_libretro.info` into the folder shown under
    `Settings > Directory > Core Info` (typically `~/.config/retroarch/cores/` or
-   `~/.config/retroarch/info/`, depending on your distribution's RetroArch package).
-4. **Check:** `ls ~/.config/retroarch/cores/crt_bridge_libretro.so` prints the path.
+   `~/.config/retroarch/info/`, depending on your distribution's RetroArch package - see above
+   if your package points elsewhere).
+4. **Check:** the file you copied in step 2 is present at the exact path read from
+   `Settings > Directory > Cores`.
 
-## 4. Two RetroArch settings that no core option can set
+## 4. Three RetroArch settings that no core option can set
 
 | Setting | Value | Why | What you see when it is wrong |
 |---|---|---|---|
 | `Settings > User Interface > Pause Content When Not Active` (`pause_nonactive`) | **Off** | RetroArch's default is On: clicking on another window pauses the core **while the stream keeps arriving**. | The picture freezes as soon as you leave the window, and resumes where it stopped instead of catching up. |
 | macOS only: `Settings > Drivers > Video` (`video_driver`) | **`glcore`** | macOS defaults to `metal` or `vulkan`, never `glcore`. A change of video driver needs a RetroArch restart. | With `metal`: smooth only while you move the mouse, less than one frame per second otherwise. With `vulkan`: it works, but it is the slowest of the three drivers tried. |
+| Windows only, when the emitter runs on this SAME PC: `Settings > Drivers > Audio` (`audio_driver`) | **`xaudio`** | RetroArch's default, `wasapi`, can take the sound card in exclusive mode; the emitter's own audio driver then fails to open it, and with nothing left to pace its loop, the emitter sends far more frames per second than its content's native rate. | Video and audio arrive in bursts on this machine, most of them stale or dropped, even though the network itself is fine. |
 
 **Check:** on macOS, after restarting, `Settings > Drivers > Video` reads `glcore`.
+
+More generally, whichever machine runs the emitter needs a working, free audio output - not
+only when it shares a PC with this client. If the emitter's own audio driver cannot open a
+sound device, nothing paces its frame rate, and it sends far faster than its content's native
+rate, wherever it runs.
 
 ## 5. Firewall
 
 The core listens on UDP port 32100 (video and audio) and UDP port 32101 (gamepad, always
 `video port + 1`) for the stream coming from the emitter.
 
-- **Windows:** the first time RetroArch opens this core, Windows asks whether to allow it
-  network access - allow it on private networks. If you missed that prompt or use a
-  third-party firewall, open UDP 32100 and 32101 for inbound connections.
+- **Windows:** Windows does not always ask. On one test machine, no prompt ever appeared, yet
+  Windows still created an inbound rule for RetroArch by itself, on both the Private and Public
+  network profiles. After the first start of this core, check that rule yourself rather than
+  wait for a prompt: open Windows Security > Firewall & network protection > Allow an app
+  through firewall (or run `wf.msc`), find RetroArch in the list, and make sure it is allowed
+  on **Private** networks only - untick Public. Also check, in Windows' own network settings,
+  that your home network itself is classified Private, not Public. If no rule exists at all, or
+  you use a third-party firewall, open UDP 32100 and 32101 for inbound connections instead.
 - **macOS:** if the built-in firewall is on (`System Settings > Network > Firewall`), accept
   incoming connections for RetroArch when asked, or add it to the allowed list.
 - **Linux:** if a firewall is active, open UDP 32100 and 32101 for inbound connections; for
@@ -188,12 +210,14 @@ core's own messages word for word, so if you read one on screen you can find it 
 | --- | --- | --- |
 | No image at all: a plain black or grey screen, and no on-screen message | Either nothing has arrived yet, or nothing ever will. The core is running fine; it has simply never been given a picture. | First, wait up to 10 seconds, doing nothing: the emitter repeats the video mode by itself until this client has it. If there is still nothing after 10 seconds: quit RetroArch (the run report is written when you quit), then open `gmc-core.json` - section 8 says where it is. `client.gmclient.wire.datagrams` at 0 means nothing at all reached this machine: check that the emitter is running, that it is aimed at this machine's current IP address, and that the network path and firewall (section 5) are open. `client.gmclient.wire.datagrams` above 0 with `client.gmclient.wire.switchres` at 0 means the stream IS reaching you but the video mode never did: tell the person running the emitter. |
 | The core appears in RetroArch's core list under its file name (`crt_bridge_libretro`) instead of `crt-bridge client` | The core loaded, but RetroArch never found `crt_bridge_libretro.info` for it. | Copy `crt_bridge_libretro.info` into the folder shown under `Settings > Directory > Core Info` - see section 3. The core still works either way; only its displayed name is affected. |
-| Windows asks whether to allow RetroArch network access, the first time you start this core | Normal: Windows always asks the first time a program opens a network port. | Allow it on private networks; see section 5. |
+| Windows asks whether to allow RetroArch network access, the first time you start this core | Normal - though Windows does not always ask; it can create the rule by itself instead. | Allow it on private networks. If you were never asked, check the rule yourself; see section 5. |
 | On screen: `Frame rate collapsed: RetroArch is not iterating this core. Set video_driver to glcore in Settings > Drivers > Video, then restart RetroArch.` (macOS) | RetroArch's video driver is not driving the run loop. On macOS the default is `metal` or `vulkan`, never `glcore`; with `metal` the event loop only wakes up on input. | Settings > Drivers > Video, set `glcore`, quit and restart RetroArch. |
 | On screen: `Frame rate collapsed: RetroArch is not iterating this core. Check the video driver and vsync settings.` (Windows or Linux) | RetroArch's video driver is not driving the run loop. | Check `Settings > Drivers > Video` and your vsync settings; if the picture is otherwise fine, this can be reported with the run report attached (section 8). |
 | On screen: `Packets are being lost between the emitter and this machine. If the picture stutters, ask the person running the emitter to set audio=off for this machine in GROOVY_FOLLOWERS.` | The network link to this machine loses packets. Sound travels in the same bursts as the picture and breaks first; the picture keeps going. On a lossy link, removing the sound shortens every burst, which may be enough to stop the picture from stuttering. | This cannot be fixed on this machine. Tell the person running the emitter: on THEIR machine, in the `GROOVY_FOLLOWERS` entry for this machine, add `audio=off` (for example `<this machine's address>:32100,audio=off`), then restart the emitter. You lose the sound, not the picture. On a home network, a wired connection instead of Wi-Fi removes the loss; over the Internet it may not. |
 | On screen: `Packets are being lost between the emitter and this machine, and no sound is being sent to it: the network link itself is the problem.` | The network link to this machine loses packets, and the emitter sends no sound here - so the losses come from the link alone, not from sound lengthening the bursts. | This cannot be fixed on this machine, and `audio=off` would change nothing: there is already no sound to remove. Tell the person running the emitter that the link loses packets. On a home network, a wired connection instead of Wi-Fi removes the loss; over the Internet it may not. |
 | The picture stutters or jerks on a Wi-Fi or remote connection | The same cause as the two rows above, seen from outside - if on-screen notifications are on, one of those two messages appears too. | If the message mentions `audio=off`: same fix, on the emitter's machine - `audio=off` in this machine's `GROOVY_FOLLOWERS` entry. If it says no sound is being sent: only a better link helps. |
+| The picture is fine, but most or all of the sound is missing, over a Wi-Fi connection | Matches the two on-screen messages above: sound travels in bursts, and on a lossy link most of it can be lost while the picture, sent continuously, mostly survives. A future emitter release is expected to reduce this. | Use a wired connection instead of Wi-Fi for this machine if you can - it removes the loss entirely. Otherwise, `audio=off` (see above) is the only mitigation available today. |
+| This client is restarted while the emitter's content keeps running: the picture comes back by itself, but the sound and the gamepad channel stay dead | The video mode is repeated automatically until this client re-syncs (section 6); the rare packets that restore sound and the gamepad channel are not repeated the same way, and can be lost entirely, especially on a Wi-Fi link. Restarting this client on its own is not always enough. | Restart the content on the emitter as well, not only this client. |
 | On screen: `Core was paused while the stream kept arriving. Turn off Settings > User Interface > Pause Content When Not Active (pause_nonactive = false).` | RetroArch paused the core when its window lost focus, while the emitter kept sending. The core sees the gap on its first wake-up and says so once per session. | Settings > User Interface, turn `Pause Content When Not Active` off. |
 | On screen: `<something>: forced to <value> by <VARIABLE>, menu value ignored` | An environment variable outranks the menu, and one is set in your shell or in a launcher script. This is deliberate: it is how a run is made reproducible. | Either unset the variable named in the message and restart, or accept the forced value. The menu will keep showing the value you picked, and it will keep being ignored. |
 | Smooth only while you move the mouse; almost frozen otherwise (macOS) | The same failure as the `glcore` row above, seen from outside. | Same fix: `video_driver` = `glcore`. |
