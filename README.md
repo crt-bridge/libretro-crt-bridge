@@ -6,12 +6,14 @@ emitter. Two computers are enough.
 
 ## Works with
 
-`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.1
+`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.2
 
 The emitter is pointed at this machine's address. Compatibility with other Groovy senders is
 not claimed. Tested against that emitter release: on Windows, picture, sound and gamepad work
-end to end; on Linux and on macOS (Apple Silicon), the core installs, loads and shows the
-picture, but the tests ran over Wi-Fi, where most of the sound and, on Linux, part of the picture were lost (see below).
+end to end; on macOS (Apple Silicon), over Wi-Fi with the emitter's Padded Session setting On,
+picture, sound, cadence and gamepad all work end to end; on Linux, the core installs, loads,
+and receives picture and sound over Wi-Fi with Padded Session On, but the full frame rate on
+screen has not yet been confirmed on that platform (see below).
 
 ## Install
 
@@ -39,11 +41,9 @@ tunnel (WireGuard, Tailscale); never expose its UDP ports to the internet.
   hardware.
 - Windows binaries are unsigned; macOS binaries are signed ad hoc, not notarized: expect a
   security warning on first launch, see `INSTALL.md`.
-- Running the emitter and this client on the same Windows PC: set RetroArch's audio driver to
-  `xaudio`, not the default `wasapi`, or the emitter can lose its own sound and run far faster
-  than its content's native rate.
-- A Wi-Fi connection can lose most of this machine's sound while the picture keeps arriving:
-  use a wired connection instead when you can; a future emitter release is expected to fix this.
+- On a Wi-Fi connection, set `Settings > Recording > Padded Session` to On in the emitter
+  (never towards a MiSTer FPGA): with it Off, most of this machine's sound can be lost while
+  the picture keeps arriving.
 - Restarting this client while the emitter's content keeps running does not always bring back
   sound and the gamepad on their own: restart the content on the emitter too if they do not
   return.
