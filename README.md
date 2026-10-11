@@ -6,10 +6,10 @@ emitter. Two computers are enough.
 
 ## Works with
 
-`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.2
+`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.3
 
 The emitter is pointed at this machine's address. Compatibility with other Groovy senders is
-not claimed. Tested against that emitter release: on Windows, picture, sound and gamepad work
+not claimed. Tested against `v1.22.2-crtbridge.2`: on Windows, picture, sound and gamepad work
 end to end; on macOS (Apple Silicon), over Wi-Fi with the emitter's Padded Session setting On,
 picture, sound, cadence and gamepad all work end to end; on Linux, the core installs, loads,
 and receives picture and sound over Wi-Fi with Padded Session On, but the full frame rate on
@@ -27,12 +27,17 @@ tunnel (WireGuard, Tailscale); never expose its UDP ports to the internet.
 
 ## Known limitations
 
-- Black screens that the emitter's re-announcement does not recover: no automatic recourse
-  yet, restart the core or the emitter.
-- A core started after the emitter can take about 2 seconds to show its first image: this is
+- With the `v1.22.2-crtbridge.3` emitter or newer, a black screen on this machine (a follower
+  that went blind during a session) is caught up by the emitter on its own. With an older
+  emitter, black screens that its re-announcement does not recover have no automatic recourse:
+  restart the core or the emitter.
+- With the `v1.22.2-crtbridge.3` emitter or newer, a core started after the emitter shows its
+  first image in under a second. With an older emitter, it can take about 2 seconds: this is
   expected, not a fault.
-- A mode change lost over a Wi-Fi link is not repaired until the next one: restart the core if
-  the image looks wrong after a mode change.
+- With the `v1.22.2-crtbridge.3` emitter or newer, a mode change lost over a Wi-Fi link (a new
+  game, a 240p/480i switch, a restarted emitter) is repaired on its own, without restarting the
+  core. With an older emitter, it is not repaired until the next one: restart the core if the
+  image looks wrong after a mode change.
 - The frame-rate-collapse message is hard to read in windowed mode: switch to fullscreen, or
   check the run report file instead.
 - Metal puts the core's loop to sleep on macOS: set RetroArch's video driver to `glcore`, not
