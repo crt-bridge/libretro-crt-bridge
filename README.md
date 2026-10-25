@@ -6,7 +6,7 @@ emitter. Two computers are enough.
 
 ## Works with
 
-`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.3
+`crt-bridge emitter`: https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.4
 
 The emitter is pointed at this machine's address. Compatibility with other Groovy senders is
 not claimed. Tested against `v1.22.2-crtbridge.2`: on Windows, picture, sound and gamepad work

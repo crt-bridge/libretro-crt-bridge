@@ -3,7 +3,7 @@
 Pre-release: first public builds, awaiting feedback from outside the test bench.
 
 Works with `crt-bridge emitter`:
-https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.3
+https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.4
 
 Tested against `v1.22.2-crtbridge.2`: on Windows, picture, sound and gamepad work end to end; on
 macOS (Apple Silicon), over Wi-Fi with the emitter's Padded Session setting On, picture, sound,

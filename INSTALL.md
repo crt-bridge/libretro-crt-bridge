@@ -13,7 +13,7 @@ nothing, by someone who has never seen this repository, on Windows, macOS, or Li
 Two computers on the same local network are enough: one runs the emitter, this one runs the
 client. The emitter is `crt-bridge emitter`, a RetroArch build published here:
 
-https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.3
+https://github.com/crt-bridge/RetroArch/releases/tag/v1.22.2-crtbridge.4
 
 Once both are installed and pointed at each other (step 5 below), this document is not needed
 again.
