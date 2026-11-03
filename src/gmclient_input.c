@@ -191,8 +191,36 @@ uint16_t gmc_input_joy_from_mask(uint16_t mask)
 }
 
 /* ---------------------------------------------------------------------------
- * gmc_input_open -- binds INADDR_ANY:<video_port + 1>. Same
- * socket()/bind()/non-blocking sequence as the hardware receiver's own
+ * gmc_input_bind_addr -- the local address the input socket listens on.
+ * GMC_BIND unset or empty: every interface (INADDR_ANY), exactly as before.
+ * Otherwise an IPv4 address written as four dotted decimal numbers. A value
+ * that cannot be read refuses the open (returns -1): a restriction that is
+ * asked for never widens silently. inet_pton, not inet_addr: inet_addr also
+ * takes "0" (every interface), "127.1" and octal or hex parts.
+ * ------------------------------------------------------------------------- */
+static int gmc_input_bind_addr(uint32_t *addr_be)
+{
+    const char *v = getenv("GMC_BIND");
+    if (!v || !*v) { *addr_be = htonl(INADDR_ANY); return 0; }
+    {
+        struct in_addr a;
+        if (inet_pton(AF_INET, v, &a) != 1) return -1;
+        *addr_be = (uint32_t)a.s_addr;
+    }
+    return 0;
+}
+
+int gmc_input_bind_state(void)
+{
+    const char *v = getenv("GMC_BIND");
+    uint32_t addr_be;
+    if (!v || !*v) return 0;
+    return gmc_input_bind_addr(&addr_be) == 0 ? 1 : -1;
+}
+
+/* ---------------------------------------------------------------------------
+ * gmc_input_open -- binds GMC_BIND (or INADDR_ANY when unset):<video_port + 1>.
+ * Same socket()/bind()/non-blocking sequence as the hardware receiver's own
  * setup_input_socket, ported to Winsock/POSIX the same way gmclient.c
  * already does for the video socket.
  * ------------------------------------------------------------------------- */
@@ -215,9 +243,12 @@ gmc_input_t *gmc_input_open(unsigned video_port)
 
     {
         struct sockaddr_in a;
+        uint32_t addr_be;
+        /* Refuse before bind(): an unreadable GMC_BIND must not listen anywhere. */
+        if (gmc_input_bind_addr(&addr_be) != 0) { gmc_input_close(in); return NULL; }
         memset(&a, 0, sizeof a);
         a.sin_family      = AF_INET;
-        a.sin_addr.s_addr = htonl(INADDR_ANY);
+        a.sin_addr.s_addr = addr_be;
         a.sin_port        = htons((uint16_t)(video_port + 1u));   /* NEVER hardcode this port */
         if (bind(in->sock, (struct sockaddr *)&a, sizeof a) != 0) { gmc_input_close(in); return NULL; }
     }

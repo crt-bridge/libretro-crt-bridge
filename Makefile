@@ -159,7 +159,9 @@ test: $(BUILD)/test_gmclient_input $(BUILD)/test_gmclient_audio $(BUILD)/test_gm
 # Loads the built core dynamically (LoadLibraryA/dlopen) and checks it
 # survives a video_cb that blocks forever, without ever starting RetroArch.
 # GMC_PORT (default 42100, read by the harness itself) lets several builds
-# run this target at once without a port clash.
+# run this target at once without a port clash. The harness listens on the
+# loopback address only (GMC_BIND defaults to 127.0.0.1 there), and its
+# bind-refused mode checks the core refuses an unreadable GMC_BIND.
 FROZEN_REPORT := $(BUILD)/frozen-run.json
 
 $(BUILD)/test_frozen_run: test/test_frozen_run.c include/libretro.h | $(BUILD)
@@ -169,6 +171,7 @@ test-frozen-run: $(CORE_LIB) $(BUILD)/test_frozen_run
 	$(BUILD)/test_frozen_run freeze $(CORE_LIB) $(FROZEN_REPORT)
 	$(BUILD)/test_frozen_run check $(FROZEN_REPORT) 1
 	$(BUILD)/test_frozen_run clean $(CORE_LIB) $(FROZEN_REPORT)
+	$(BUILD)/test_frozen_run bind-refused $(CORE_LIB)
 
 clean:
 	rm -rf $(BUILD)

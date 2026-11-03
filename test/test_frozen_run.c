@@ -28,6 +28,12 @@
  *                          the emitter against a game with audible sound,
  *                          not a silent menu, for this verdict to prove
  *                          anything about audio)
+ *   test_frozen_run bind-refused <core> -> sets GMC_BIND to a value that is
+ *                          not an address, loads the core, and exits 0 only
+ *                          if the core refuses to load
+ *   test_frozen_run bind-busy <core> -> GMC_BIND readable, GMC_PORT held by
+ *                          the caller on that address: exits 0 only if the
+ *                          core refuses to load
  *
  * The freeze and its readback are two separate processes: on Windows, a
  * DLL's atexit() hooks only run at its unload, after the program's own; a
@@ -38,6 +44,9 @@
  * channel on -- as a real frontend would -- and defaults to 32100, the
  * protocol's own port, since it plays against a real stream rather than a
  * synthetic one.
+ * Every mode sets GMC_BIND to 127.0.0.1 unless the variable is already set, so
+ * the core listens on the loopback address only; set it first to listen
+ * elsewhere (smoke against an emitter on another machine, for instance).
  */
 #include <pthread.h>
 #include <stdio.h>
@@ -254,8 +263,65 @@ static int smoke_mode(const char *core, const char *report, int seconds)
     return (smoke_fresh >= (uint64_t)(10 * seconds) && smoke_audio_nonzero > 0) ? 0 : 1;
 }
 
+/* Loads the core and exits 0 only when retro_load_game refuses. */
+static int load_must_fail(const char *core, const char *what);
+
+/* bind-refused -- a listening address the core cannot read must make it refuse
+ * to load, never fall back to every interface. Exit 0 only when retro_load_game
+ * returns false; the core's own message (on stderr, no log interface is wired)
+ * must name GMC_BIND and the value, and say the value is unreadable. */
+static int bind_refused_mode(const char *core)
+{
+    set_env("GMC_BIND", "not-an-address");
+    return load_must_fail(core, "under GMC_BIND=not-an-address");
+}
+
+/* bind-busy -- GMC_BIND is readable (127.0.0.1 unless the caller set it) but
+ * the caller holds GMC_PORT on that address: the core must refuse to load and
+ * say the port is busy, not that the value is unreadable. */
+static int bind_busy_mode(const char *core)
+{
+    if (!getenv("GMC_PORT")) {
+        fprintf(stderr, "bind-busy: set GMC_PORT to the port the caller holds\n");
+        return 2;
+    }
+    return load_must_fail(core, "with its video port held");
+}
+
+static int load_must_fail(const char *core, const char *what)
+{
+    set_env("GMC_INPUT", "1");
+    if (!getenv("GMC_PORT")) set_env("GMC_PORT", "42100");
+
+    struct core_api api;
+    void *h = load_core(core, &api);
+    if (!h) return 2;
+    api.set_env(env_cb);
+    api.set_video(video_cb);
+    api.set_audio(audio_cb);
+    api.set_batch(audio_batch_cb);
+    api.set_poll(input_poll_cb);
+    api.set_state(input_state_cb);
+    api.init();
+    if (api.load(NULL)) {
+        printf("FAIL: the core loaded %s\n", what);
+        api.unload();
+        api.deinit();
+        return 1;
+    }
+    printf("OK: the core refused to load %s\n", what);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    /* Every mode listens on the loopback address unless the caller says otherwise:
+     * a test must not open a socket on a network interface. */
+    if (!getenv("GMC_BIND")) set_env("GMC_BIND", "127.0.0.1");
+    if (argc == 3 && strcmp(argv[1], "bind-refused") == 0)
+        return bind_refused_mode(argv[2]);
+    if (argc == 3 && strcmp(argv[1], "bind-busy") == 0)
+        return bind_busy_mode(argv[2]);
     if (argc == 4 && strcmp(argv[1], "check") == 0)
         return check_report(argv[2], atoi(argv[3]));
     if (argc == 5 && strcmp(argv[1], "smoke") == 0)
@@ -263,7 +329,9 @@ int main(int argc, char **argv)
     if (argc != 4 || (strcmp(argv[1], "freeze") && strcmp(argv[1], "clean"))) {
         fprintf(stderr, "usage: freeze|clean <core> <report.json>\n"
                         "   or: check <report.json> <expected>\n"
-                        "   or: smoke <core> <report.json> <seconds>\n");
+                        "   or: smoke <core> <report.json> <seconds>\n"
+                        "   or: bind-refused <core>\n"
+                        "   or: bind-busy <core>   (GMC_PORT held by the caller)\n");
         return 2;
     }
     freeze_mode = strcmp(argv[1], "freeze") == 0;

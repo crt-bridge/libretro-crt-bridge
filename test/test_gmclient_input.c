@@ -28,6 +28,96 @@ static void test_sleep_ms(unsigned ms)
 }
 #endif
 
+/* GMC_BIND is the variable the core reads to choose the listening address. The
+ * harness sets it itself, to the loopback address, so that no test in this file
+ * ever listens on a network interface -- whatever Makefile or script runs it. */
+#ifdef _WIN32
+static void test_set_env(const char *k, const char *v) { _putenv_s(k, v); }
+#else
+static void test_set_env(const char *k, const char *v) { setenv(k, v, 1); }
+#endif
+
+/* The socket really is bound where GMC_BIND said: loopback, video port + 1. */
+static void test_assert_bound_loopback(gmc_input_t *in, unsigned video_port)
+{
+    struct sockaddr_in got;
+    socklen_t gl = (socklen_t)sizeof got;
+    memset(&got, 0, sizeof got);
+    assert(getsockname(in->sock, (struct sockaddr *)&got, &gl) == 0);
+    assert(got.sin_family == AF_INET);
+    assert(got.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+    assert(ntohs(got.sin_port) == (uint16_t)(video_port + 1u));
+}
+
+/* GMC_BIND cases: bound to loopback, empty means every interface, an unreadable
+ * value refuses the open and binds nothing. Test video port 32108 (input 32109). */
+static void test_gmc_bind(void)
+{
+    gmc_input_t *in;
+    uint32_t addr = 0xDEADBEEFu;
+
+    test_set_env("GMC_BIND", "127.0.0.1");
+    in = gmc_input_open(32108u);
+    assert(in != NULL);
+    test_assert_bound_loopback(in, 32108u);
+    gmc_input_close(in);
+
+    /* Empty: the function alone, no socket -- every interface, as before. */
+    test_set_env("GMC_BIND", "");
+    assert(gmc_input_bind_addr(&addr) == 0);
+    assert(addr == htonl(INADDR_ANY));
+    assert(gmc_input_bind_state() == 0);
+
+    /* Every interface written in full stays an explicit, accepted choice. */
+    test_set_env("GMC_BIND", "0.0.0.0");
+    assert(gmc_input_bind_addr(&addr) == 0);
+    assert(addr == htonl(INADDR_ANY));
+    assert(gmc_input_bind_state() == 1);
+
+    test_set_env("GMC_BIND", "127.0.0.1");
+    assert(gmc_input_bind_state() == 1);
+
+    /* Unreadable: the open is refused, and nothing was bound -- the input port
+     * is still free for a probe socket on the loopback address. "0" and "127.1"
+     * are forms inet_addr would have taken (every interface, loopback): they
+     * are not four dotted decimal numbers, so they are refused too. */
+    {
+        static const char *const bad[] = {
+            "not-an-address", "300.20.30.40", "localhost", "0", "127.1", "010.0.0.1",
+        };
+        size_t i;
+        for (i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            struct sockaddr_in a;
+            gmc_input_sock probe;
+#ifdef _WIN32
+            WSADATA wsa;   /* the refused open cleaned Winsock up: start it for the probe */
+            assert(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+#endif
+            test_set_env("GMC_BIND", bad[i]);
+            assert(gmc_input_bind_addr(&addr) == -1);
+            assert(gmc_input_bind_state() == -1);
+            in = gmc_input_open(32108u);
+            assert(in == NULL);
+            probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            assert(probe != GMC_INPUT_BAD_SOCK);
+            memset(&a, 0, sizeof a);
+            a.sin_family      = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            a.sin_port        = htons(32109);
+            assert(bind(probe, (struct sockaddr *)&a, sizeof a) == 0);
+#ifdef _WIN32
+            closesocket(probe);
+            WSACleanup();
+#else
+            close(probe);
+#endif
+        }
+    }
+
+    test_set_env("GMC_BIND", "127.0.0.1");
+    printf("gmc_input bind: 127.0.0.1 ok\n");
+}
+
 /* --- Test RetroPad accessor (case 5): only one id "held" at a time --- */
 static unsigned g_test_pressed_id = 0xFFFFFFFFu;
 static int test_get_pad(unsigned id) { return id == g_test_pressed_id; }
@@ -108,6 +198,7 @@ static void test_two_threads_handshake_and_mailbox(void)
 
     in = gmc_input_open(32106u);
     assert(in != NULL);
+    test_assert_bound_loopback(in, 32106u);
 
     /* --- before any handshake: no peer, and a deposit does not go out ------- */
     assert(gmc_input_have_peer(in) == 0);
@@ -198,6 +289,10 @@ static void test_two_threads_handshake_and_mailbox(void)
 int main(void)
 {
     uint8_t buf[64];
+
+    /* The harness binds the loopback address itself, before any socket opens. */
+    test_set_env("GMC_BIND", "127.0.0.1");
+    test_gmc_bind();
 
     /* --- Case 1: sizes -- redundant with gmclient_input.h's
      * _Static_assert, and that is deliberate: the test fails with a
@@ -357,6 +452,7 @@ int main(void)
 
         in = gmc_input_open(32104u);
         assert(in != NULL);
+        test_assert_bound_loopback(in, 32104u);
 
 #ifdef _WIN32
         tsock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);

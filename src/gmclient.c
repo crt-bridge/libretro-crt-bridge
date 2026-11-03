@@ -12,7 +12,8 @@
  *     12 (LZ4), 13 (LZ4 delta -- refused);
  *   - bytes expected per blit = h_active x (interlace ? v_active/2 : v_active) x 3,
  *     for 0x06 as for 0x07;
- *   - RGB888 in R, G, B order; field 0 = even lines, field 1 = odd lines;
+ *   - RGB888 in B, G, R byte order (the first byte of a pixel is the blue, as upstream
+ *     sends it: a yellow pixel is 00 FF FF); field 0 = even lines, field 1 = odd lines;
  *   - 0x06 under interlace = one field per send, parity = frame_id & 1;
  *     0x07 from the fork = two fields per frame, same frame_id.
  */
@@ -201,7 +202,13 @@ typedef pthread_t        gmc_thread;
  * is stamped truly; a later successor is stamped after the decode, well above
  * the threshold. */
 #define GMC_TRACE_PEEK_NS 200000ull
-#define GMC_MAX_W         1024u
+/* Widest and tallest CMD_SWITCHRES accepted. The emitter announces its frozen modelines at
+ * up to 2560 columns (240p and 480i, pixels repeated), 1280 (PC-98), 1576 (X68000 desktop);
+ * the tallest announced is 576 lines. 2560 is therefore the width the client must hold, and
+ * 1024 lines leaves room. The core's MAX_W / MAX_H (core/crt_bridge_libretro.c) must stay at
+ * least as large: its frame buffer is sized from them (a test in emitter/test keeps both sides
+ * in step). */
+#define GMC_MAX_W         2560u
 #define GMC_MAX_H         1024u
 #define GMC_MAX_SAMPLES   400000u
 
@@ -659,7 +666,8 @@ static void rows_to_canvas(gmc_t *c, const uint8_t *rgb, uint32_t lines, uint32_
         uint32_t *dst = c->canvas + (size_t)dst_row * w;
         const uint8_t *src = rgb + (size_t)r * w * 3u;
         for (uint32_t x = 0; x < w; x++, src += 3)
-            dst[x] = ((uint32_t)src[0] << 16) | ((uint32_t)src[1] << 8) | (uint32_t)src[2];
+            /* wire pixel = B, G, R (upstream order); canvas = 0x00RRGGBB */
+            dst[x] = ((uint32_t)src[2] << 16) | ((uint32_t)src[1] << 8) | (uint32_t)src[0];
     }
 }
 
@@ -1062,6 +1070,27 @@ void gmc_config_defaults(gmc_config *cfg)
     cfg->port = 32100; cfg->target_depth = 1; cfg->ring_capacity = 8; cfg->send_status = 1;
 }
 
+/* The local address the video socket listens on. GMC_BIND unset or empty: every
+ * interface (INADDR_ANY), exactly as before. Otherwise an IPv4 address written
+ * as four dotted decimal numbers (inet_pton, not inet_addr, which also takes
+ * "0" for every interface, "127.1" and octal parts). A value that cannot be
+ * read refuses the open (returns -1): a restriction that is asked for never
+ * widens silently. Same rule as the input channel's own copy
+ * (gmclient_input.c), kept as a second copy on purpose. */
+#ifndef GMCLIENT_TEST
+static int gmc_bind_addr(uint32_t *addr_be)
+{
+    const char *v = getenv("GMC_BIND");
+    if (!v || !*v) { *addr_be = htonl(INADDR_ANY); return 0; }
+    {
+        struct in_addr a;
+        if (inet_pton(AF_INET, v, &a) != 1) return -1;
+        *addr_be = (uint32_t)a.s_addr;
+    }
+    return 0;
+}
+#endif /* GMCLIENT_TEST */
+
 gmc_t *gmc_open(const gmc_config *cfg)
 {
 #ifndef GMCLIENT_TEST
@@ -1093,7 +1122,10 @@ gmc_t *gmc_open(const gmc_config *cfg)
     { int got = 0; socklen_t ol = (socklen_t)sizeof got;
       if (getsockopt(c->sock, SOL_SOCKET, SO_RCVBUF, (char *)&got, &ol) == 0) c->rcvbuf_got = got; }
     struct sockaddr_in a; memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons((uint16_t)c->cfg.port);
+    uint32_t addr_be;
+    /* Refuse before bind(): an unreadable GMC_BIND must not listen anywhere. */
+    if (gmc_bind_addr(&addr_be) != 0) { gmc_close(c); return NULL; }
+    a.sin_family = AF_INET; a.sin_addr.s_addr = addr_be; a.sin_port = htons((uint16_t)c->cfg.port);
     if (bind(c->sock, (struct sockaddr *)&a, sizeof a) != 0) { gmc_close(c); return NULL; }
 #ifdef _WIN32
     u_long nb = 1; ioctlsocket(c->sock, FIONBIO, &nb);

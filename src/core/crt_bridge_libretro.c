@@ -35,7 +35,11 @@
 #include "loss_hint.h"
 #include "crt_bridge_version.h"
 
-#define MAX_W 1024
+/* Frame buffer bounds (fb is MAX_W x MAX_H XRGB, 10.5 MiB) and the geometry maximum handed to
+ * the frontend. They must stay at least GMC_MAX_W / GMC_MAX_H of gmclient.c: the client refuses
+ * anything wider, the core must be able to hold anything the client lets through. 2560 columns
+ * is the widest announce of the emitter (frozen 240p / 480i). */
+#define MAX_W 2560
 #define MAX_H 1024
 #define GMC_AUDIO_TICK_FRAMES 800u   /* 48000 / 60: one fallback silence tick */
 
@@ -609,17 +613,31 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
      * OPENED BEFORE gmc_open: its socket is watched by the client's receive thread, so it
      * must exist before that thread starts. The wiring goes through cfg.input_chan, never
      * through an accessor set afterwards. */
+    /* GMC_BIND: 0 = unset, 1 = readable address, -1 = unreadable value. An open
+     * that fails under a readable value is a busy port or an address that is not
+     * this machine's -- never blame the value for it. */
+    const char *bind_env = getenv("GMC_BIND");
+    const int bind_state = gmc_input_bind_state();
     if (input_enabled) {
         input_chan = gmc_input_open(cfg.port);
         if (input_chan)
             logf_(RETRO_LOG_INFO, "gamepad channel: listening UDP %u", cfg.port + 1);
+        else if (bind_state < 0)
+            logf_(RETRO_LOG_WARN, "gamepad channel unavailable: GMC_BIND=\"%s\" is unreadable (four dotted decimal numbers expected): refusing to fall back to every interface, gamepad disabled", bind_env);
+        else if (bind_state > 0)
+            logf_(RETRO_LOG_WARN, "gamepad channel unavailable: GMC_BIND=\"%s\" could not listen on UDP %u (port busy, or not an address of this machine): refusing to fall back to every interface, gamepad disabled", bind_env, cfg.port + 1);
         else
             logf_(RETRO_LOG_WARN, "gamepad channel unavailable (bind %u failed?), gamepad disabled", cfg.port + 1);
     }
     cfg.input_chan = input_chan;
     client = gmc_open(&cfg);
     if (!client) {
-        logf_(RETRO_LOG_ERROR, "gmc_open failed (port %u busy?)", cfg.port);
+        if (bind_state < 0)
+            logf_(RETRO_LOG_ERROR, "gmc_open failed: GMC_BIND=\"%s\" is unreadable (four dotted decimal numbers expected): refusing to fall back to every interface", bind_env);
+        else if (bind_state > 0)
+            logf_(RETRO_LOG_ERROR, "gmc_open failed: GMC_BIND=\"%s\" could not listen on UDP %u (port busy, or not an address of this machine): refusing to fall back to every interface", bind_env, cfg.port);
+        else
+            logf_(RETRO_LOG_ERROR, "gmc_open failed (port %u busy?)", cfg.port);
         if (input_chan) { gmc_input_close(input_chan); input_chan = NULL; }
         return false;
     }
@@ -817,7 +835,8 @@ RETRO_API void retro_run(void)
         }
         /* This copy is the only large item in the segment measured by retro_run_work_us,
          * once lock contention is ruled out by measurement (acquire_wait_us p99 = 1 us).
-         * 307 KB in 240p, 573 KB in 480i, per frame. */
+         * 307 KB in 240p, 573 KB in 480i, per frame at the native widths; 2.4 MB in 240p and
+         * 4.9 MB in 480i for the frozen 2560-column announce (cost not yet measured). */
         const uint64_t t_cp0 = gmc_now_ns();
         for (unsigned y = 0; y < cur_h; y++) memcpy(fb + (size_t)y * cur_w, f->xrgb + (size_t)y * cur_w, (size_t)cur_w * 4);
         push(&copy_us, &copy_n, &copy_cap, (double)(gmc_now_ns() - t_cp0) / 1e3);

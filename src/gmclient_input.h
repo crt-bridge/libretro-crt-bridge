@@ -91,6 +91,12 @@ typedef struct gmc_input gmc_input_t;
  * all of this repo's tooling. */
 gmc_input_t *gmc_input_open(unsigned video_port);
 
+/* What GMC_BIND says, read the way gmc_input_open and gmc_open read it:
+ * 0 = unset or empty (every interface), 1 = a readable IPv4 address (four
+ * dotted decimal numbers), -1 = set but unreadable. Lets a caller whose open
+ * failed tell an unreadable value from a busy port or a foreign address. */
+int gmc_input_bind_state(void);
+
 /* Drains the socket without blocking, at most 64 datagrams per call (same
  * hard bound as gm_poll_inputs on the emitter side: a flooding peer must not
  * lengthen the tick). Learns (or relearns) the emitter's address from the
