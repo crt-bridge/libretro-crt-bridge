@@ -204,7 +204,12 @@ static int gmc_input_bind_addr(uint32_t *addr_be)
     if (!v || !*v) { *addr_be = htonl(INADDR_ANY); return 0; }
     {
         struct in_addr a;
+        const char *p;
         if (inet_pton(AF_INET, v, &a) != 1) return -1;
+        /* macOS's inet_pton takes a leading zero in a part ("010" read as ten), glibc and
+         * Winsock refuse it, and some parsers read it as octal: refuse it everywhere. */
+        for (p = v; *p; p++)
+            if (*p == '0' && (p == v || p[-1] == '.') && p[1] >= '0' && p[1] <= '9') return -1;
         *addr_be = (uint32_t)a.s_addr;
     }
     return 0;
