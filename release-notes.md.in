@@ -20,6 +20,12 @@ Not affiliated with, or endorsed by, the libretro project.
 The protocol has no authentication and no encryption. Use it on a local network, or through a
 tunnel (WireGuard, Tailscale); never expose its UDP ports to the internet.
 
+## Breaking change: pixel byte order on the wire
+
+Pixels now travel in B, G, R byte order, as upstream Groovy sends them (previously R, G, B).
+The emitter and this client must be updated together: an older emitter with this client, or the
+reverse, shows red and blue swapped. Receivers built before this change are affected the same way.
+
 ## Known limitations
 
 - With the `v1.22.2-crtbridge.3` emitter or newer, a black screen on this machine (a follower
