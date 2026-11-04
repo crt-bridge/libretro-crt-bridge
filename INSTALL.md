@@ -30,8 +30,8 @@ the core runs but shows no settings at all. Check your version from
 `Main Menu > Information > System Information`, or by running RetroArch with `--version` from a
 terminal.
 
-The archive names are `crt-bridge-client-v0.1.0-windows-x64.zip`,
-`crt-bridge-client-v0.1.0-linux-x64.tar.gz`, and `crt-bridge-client-v0.1.0-macos-universal.zip`.
+The archive names are `crt-bridge-client-v0.2.0-windows-x64.zip`,
+`crt-bridge-client-v0.2.0-linux-x64.tar.gz`, and `crt-bridge-client-v0.2.0-macos-universal.zip`.
 The macOS archive is a universal binary: the Apple Silicon (arm64) slice is proven on real
 hardware; the Intel (x86_64) slice is built the same way but has not been tested on real Intel
 hardware. Both slices target macOS 11 or later.
