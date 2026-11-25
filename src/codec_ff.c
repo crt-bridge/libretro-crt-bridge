@@ -7,8 +7,9 @@
  * (gmc_ff_available() = 0) and the client keeps its other paths. The client therefore ships without
  * any third-party binary beside it and without FFmpeg's licence in its own.
  *
- * Search order: the directory in GMC_FFMPEG_DIR (absolute path, so the loader never searches a
- * writable directory), then the system. Only the majors listed in gmc_ff_ok[] are accepted: that
+ * Search order: the directory in GMC_FFMPEG_DIR (made absolute; on Windows its dependencies are
+ * looked up in that directory and System32 only, never PATH or the current directory), then the
+ * system. Only the majors listed in gmc_ff_ok[] are accepted: that
  * list is the set that was actually tested, and a major that is not in it is refused even if the file
  * loads. Today: libavcodec 61 with libavutil 59 (FFmpeg 7.1), and libavcodec 63 with libavutil 61.
  *
@@ -32,6 +33,9 @@
 #  include <windows.h>
 #  ifndef LOAD_LIBRARY_SEARCH_SYSTEM32
 #    define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
+#  endif
+#  ifndef LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+#    define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x00000100
 #  endif
 #else
 #  include <dlfcn.h>
@@ -112,7 +116,8 @@ static void *gmc_ff_dlopen(const wchar_t *dir, const char *name)
     if (!dir) return (void *)LoadLibraryExW(wname, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);   /* System32 only */
     if (_snwprintf(joined, 1024, L"%ls\\%ls", dir, wname) < 0) return NULL;
     if (!GetFullPathNameW(joined, 1024, full, NULL)) return NULL;                          /* absolute, always */
-    return (void *)LoadLibraryExW(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);              /* its siblings resolve beside it */
+    /* its dependencies resolve beside it, then in System32 -- never PATH or the current directory */
+    return (void *)LoadLibraryExW(full, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
 }
 static void *gmc_ff_dlsym(void *h, const char *n) { return (void *)GetProcAddress((HMODULE)h, n); }
 static void  gmc_ff_dlclose(void *h) { if (h) FreeLibrary((HMODULE)h); }

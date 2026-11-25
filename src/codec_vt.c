@@ -200,7 +200,7 @@ int gmc_vt_decode(gmc_vt *d, const uint8_t *au, size_t len, uint32_t *xrgb, size
         {
             size_t e = i;
             while (e > s && au[e - 1] == 0) e--;      /* trailing zero bytes belong to the next start code */
-            nal[nn].off = s; nal[nn].n = e - s; nn++;
+            if (e > s) { nal[nn].off = s; nal[nn].n = e - s; nn++; }   /* an empty NAL has no header byte to read */
         }
     }
     for (i = 0; i < nn; i++) {

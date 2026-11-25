@@ -184,7 +184,9 @@ emitter keeps sending compressed pixels, as before. The picture works either way
   libavcodec 61 with libavutil 59 (FFmpeg 7.1), or libavcodec 63 with libavutil 61, are
   accepted; any other version is refused, even if present.
   - **Linux:** the system loader finds your distribution's package, if its version is one of
-    the two above (Debian 13, for example, ships FFmpeg 7.1).
+    the two above (Debian 13, for example, ships FFmpeg 7.1). To use another copy, set
+    `GMC_FFMPEG_DIR` to the full path of a folder holding `libavcodec.so.61` and
+    `libavutil.so.59` (or `.so.63` and `.so.61`); it is tried before the system.
   - **Windows:** only the system folder is searched. Set the environment variable
     `GMC_FFMPEG_DIR` to the full path of a folder holding `avcodec-61.dll` and `avutil-59.dll`
     (or `avcodec-63.dll` and `avutil-61.dll`), for example from a "shared" FFmpeg build, then
