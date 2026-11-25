@@ -72,10 +72,20 @@ static void gmc_vt_output(void *refcon, void *src, OSStatus status, VTDecodeInfo
     const unsigned w = (unsigned)CVPixelBufferGetWidth(img), h = (unsigned)CVPixelBufferGetHeight(img);
     const OSType f = CVPixelBufferGetPixelFormatType(img);
     int matrix601 = 1;
-    CFTypeRef m = CVBufferCopyAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL);
-    if (m) {
-        if (CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_709_2)) matrix601 = 0;
-        CFRelease(m);
+    /* CVBufferCopyAttachment exists from macOS 12 only; the core targets macOS 11, where the
+     * older CVBufferGetAttachment (not retained, deprecated from 12) is the one to call. */
+    if (__builtin_available(macOS 12.0, *)) {
+        CFTypeRef m = CVBufferCopyAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL);
+        if (m) {
+            if (CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_709_2)) matrix601 = 0;
+            CFRelease(m);
+        }
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        CFTypeRef m = CVBufferGetAttachment(img, kCVImageBufferYCbCrMatrixKey, NULL);
+#pragma clang diagnostic pop
+        if (m && CFEqual(m, kCVImageBufferYCbCrMatrix_ITU_R_709_2)) matrix601 = 0;
     }
     d->pix_fmt = f;
     if ((size_t)w * h > d->out_cap_px) { d->bad_format = 1; return; }
