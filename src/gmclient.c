@@ -188,6 +188,41 @@ typedef pthread_t        gmc_thread;
 #define CMD_BLIT_VSYNC        0x06
 #define CMD_BLIT_FIELD_VSYNC  0x07
 #define CMD_GET_VERSION       0x08
+#define CMD_NATIVE_SCALE      0x09   /* padded session only: [0x09, kx, ky, 0, 0,0,0,0] */
+#define CMD_NATIVE_PLACE      0x0A   /* padded session only: [0x0A, kx, ky, w u16, h u16, 0] */
+#define FLAG_NATIVE_OK        0x80   /* status bit, padded session only: the native contract is understood */
+#define FLAG_CODEC_H264       0x08   /* status bits, padded session only: this client takes H.264 / HEVC */
+#define FLAG_CODEC_HEVC       0x10
+#define GMC_CODEC_H264        0x10   /* CMD_INIT compression values of a codec session */
+#include "gm_shard.c"   /* the codec session transport (from libgm), compiled into this unit */
+#ifdef __APPLE__
+#include "codec_vt.c"   /* H.264 decoding through VideoToolbox (system frameworks only) */
+#define GMC_HAVE_VT 1
+#endif
+#ifdef GMC_HAVE_FF
+#include "codec_ff.c"   /* H.264 decoding through a libavcodec loaded at run time (nothing linked) */
+#endif
+#if defined(GMC_HAVE_VT) || defined(GMC_HAVE_FF)
+#define GMC_HAVE_DEC 1
+enum { GMC_DEC_NONE = 0, GMC_DEC_VT, GMC_DEC_FF };
+/* Which decoder the client uses. GMC_DECODER = vt | ff | auto (the default, and any other value):
+ * auto takes VideoToolbox first where it exists, else libavcodec if it can be loaded. A choice the
+ * build or the machine cannot honour gives GMC_DEC_NONE: the client then takes no codec session. */
+static int gmc_dec_pick(void)
+{
+    const char *e = getenv("GMC_DECODER");
+    const int want_vt = !(e && strcmp(e, "ff") == 0), want_ff = !(e && strcmp(e, "vt") == 0);
+#ifdef GMC_HAVE_VT
+    if (want_vt) return GMC_DEC_VT;
+#endif
+#ifdef GMC_HAVE_FF
+    if (want_ff && gmc_ff_available()) return GMC_DEC_FF;
+#endif
+    (void)want_vt; (void)want_ff;
+    return GMC_DEC_NONE;
+}
+#endif
+#define GMC_CODEC_HEVC        0x11
 
 #define FLAG_VRAM_READY      0x01
 #define FLAG_VRAM_END_FRAME  0x02
@@ -206,8 +241,7 @@ typedef pthread_t        gmc_thread;
  * up to 2560 columns (240p and 480i, pixels repeated), 1280 (PC-98), 1576 (X68000 desktop);
  * the tallest announced is 576 lines. 2560 is therefore the width the client must hold, and
  * 1024 lines leaves room. The core's MAX_W / MAX_H (core/crt_bridge_libretro.c) must stay at
- * least as large: its frame buffer is sized from them (a test in emitter/test keeps both sides
- * in step). */
+ * least as large: its frame buffer is sized from them (a test keeps both sides in step). */
 #define GMC_MAX_W         2560u
 #define GMC_MAX_H         1024u
 #define GMC_MAX_SAMPLES   400000u
@@ -298,6 +332,27 @@ struct gmc {
     /* session */
     int      session_open, compressed, audio_announced;
     int      padded;   /* set by the length of the received CMD_INIT */
+    /* Codec session: 0 = none, else GMC_CODEC_H264 / GMC_CODEC_HEVC (padded session only, and only
+     * if the config says the client takes it). The image payload then comes as shards. */
+    uint8_t  codec;
+    gm_shard_rx *srx;
+    uint32_t codec_hdr_id;     /* 32-bit frame id of the last Groovy header, to extend the 16-bit one */
+    uint16_t codec_hdr_vsync;
+    int      codec_need_key;   /* a decoder that lost its reference waits for the next keyframe */
+    uint16_t idr_counter;      /* the keyframe request counter, sent in the status (bytes 10-11) */
+    uint64_t idr_last_ns;      /* when it last moved */
+    uint64_t idr_wait_since_ns;/* since when the decoder waits for a keyframe (0 = it does not) */
+    uint64_t idr_recover_ns[64]; unsigned idr_recover_n;   /* how long each wait lasted */
+#ifdef GMC_HAVE_DEC
+    int      dec;              /* GMC_DEC_*, chosen at open */
+    uint32_t *vt_buf; size_t vt_buf_px;   /* the decoded picture, before it goes to the canvas */
+#endif
+#ifdef GMC_HAVE_VT
+    gmc_vt  *vt;
+#endif
+#ifdef GMC_HAVE_FF
+    gmc_ff  *ff;
+#endif
     uint8_t  audio_rate_code, audio_channels;
 
     /* audio: PCM ring and wire -> fixed 48000 Hz resampling. Allocated by
@@ -318,6 +373,14 @@ struct gmc {
     int      have_geom;
     uint32_t geom_seen_by_shell;
     uint32_t blit_w, blit_lines_full, blit_lines_field;
+    /* Factors announced by CMD_NATIVE_SCALE: the payload holds blit_w/kx columns and
+     * lines/ky lines, enlarged here into the canvas. 0 = none announced (same as 1).
+     * Reset by every CMD_SWITCHRES, like the hardware receiver. */
+    uint8_t  native_kx, native_ky;
+    /* CMD_NATIVE_PLACE: size of the picture as it travels (whole frame) and where its
+     * enlarged form sits in the canvas (centred, same floor as the emitter's
+     * composition). native_w = 0: none, the factors alone divide the mode. */
+    uint32_t native_w, native_h, native_xoff, native_yoff;
 
     /* persistent canvas (last frame, full height, XRGB) */
     uint32_t *canvas; size_t canvas_px;
@@ -359,7 +422,8 @@ struct gmc {
              unknown_opcode, audio_blocks, audio_bytes, status_sent, get_status,
              closes, overlong, blit_empty, overflow_drops, skips, underruns, prerolls,
              repeats, presents, pattern_ok, pattern_mismatch, field_swapped, geom_changes,
-             half_fields, status_nogeom;
+             half_fields, status_nogeom, native_refused, rgb_unsupported,
+             codec_frames, codec_stray, codec_decoded, codec_decode_err, codec_size_mismatch, codec_waiting_key, idr_requests;
     /* The same escapes, split by the kind of block that was cut (pend_kind at
      * the time of the escape); cont_escape stays their sum. */
     uint64_t cont_escape_audio, cont_escape_video;
@@ -420,6 +484,8 @@ static int zero_tail(const uint8_t *b, size_t from, size_t to)
  *   0x06 CMD_BLIT_VSYNC          7 or 11      same        --
  *   0x07 CMD_BLIT_FIELD_VSYNC    8/9/12/13    same        --
  *   0x08 CMD_GET_VERSION         len==1       len==8      b[1..7]
+ *   0x09 CMD_NATIVE_SCALE        refused      len==8      b[4..7]; b[1], b[2] in 1..8, b[3]==0
+ *   0x0A CMD_NATIVE_PLACE        refused      len==8      b[7]; b[1], b[2] in 1..8, width and height non zero
  *
  * ACCEPTED EXCEPTION, NOT A PENDING WORKAROUND: CMD_INIT is recognized at 4,
  * 5 AND 8 bytes IN BOTH MODES, bytes 4 to 7 required zero for the 8-byte
@@ -463,6 +529,7 @@ static int is_command_header(const uint8_t *b, size_t len, int compressed, int p
     if (b[0] == CMD_INIT) {
         if ((len == 4u || len == 5u) && b[1] <= 1u && b[2] <= 3u) return 1;
         if (len == 8u && b[1] <= 1u && b[2] <= 3u && zero_tail(b, 4u, 8u)) return 1;
+        if (len == 8u && (b[1] == 0x10u || b[1] == 0x11u) && b[2] <= 3u && zero_tail(b, 4u, 8u)) return 1;
         return 0;
     }
 
@@ -474,6 +541,11 @@ static int is_command_header(const uint8_t *b, size_t len, int compressed, int p
         if (b[0] == CMD_GET_STATUS  && len == 8u && zero_tail(b, 1u, 8u)) return 1;
         if (b[0] == CMD_GET_VERSION && len == 8u && zero_tail(b, 1u, 8u)) return 1;
         if (b[0] == CMD_AUDIO       && len == 8u && zero_tail(b, 3u, 8u)) return 1;
+        if (b[0] == CMD_NATIVE_SCALE && len == 8u && b[1] >= 1u && b[1] <= 10u &&
+            b[2] >= 1u && b[2] <= 10u && b[3] == 0u && zero_tail(b, 4u, 8u)) return 1;
+        if (b[0] == CMD_NATIVE_PLACE && len == 8u && b[1] >= 1u && b[1] <= 10u &&
+            b[2] >= 1u && b[2] <= 10u && (b[3] | b[4]) != 0u && (b[5] | b[6]) != 0u &&
+            b[7] == 0u) return 1;
         return 0;
     } else {
         if (b[0] == CMD_CLOSE       && len == 1u) return 1;
@@ -484,16 +556,30 @@ static int is_command_header(const uint8_t *b, size_t len, int compressed, int p
     }
 }
 
+/* The flag byte of the 13-byte status. In a padded session (never in a classic one, so an upstream
+ * emitter does not read them) it also says what this client understands: the native contract and
+ * the codecs it takes. */
+static uint8_t status_flags(const gmc_t *c)
+{
+    uint8_t flags = FLAG_VRAM_READY | FLAG_VRAM_END_FRAME;
+    if (c->have_geom) flags |= FLAG_VRAM_SYNCED;
+    if (c->audio_announced) flags |= FLAG_AUDIO;
+    if (c->padded) {
+        flags |= FLAG_NATIVE_OK;
+        if (c->cfg.codec_caps & 1u) flags |= FLAG_CODEC_H264;
+        if (c->cfg.codec_caps & 2u) flags |= FLAG_CODEC_HEVC;
+    }
+    if (c->have_geom && c->geom.interlaced && (c->ack_frame & 1u)) flags |= FLAG_VGA_F1;
+    return flags;
+}
+
 static void send_status(gmc_t *c, uint32_t frame_echo, uint16_t vcount_echo)
 {
     if (!c->cfg.send_status || !c->have_src) return;
     uint8_t pkt[13];
     c->ack_frame++;
-    uint8_t flags = FLAG_VRAM_READY | FLAG_VRAM_END_FRAME;
-    if (c->have_geom) flags |= FLAG_VRAM_SYNCED;
-    if (c->audio_announced) flags |= FLAG_AUDIO;
-    if (c->have_geom && c->geom.interlaced && (c->ack_frame & 1u)) flags |= FLAG_VGA_F1;
-    uint16_t vcount = 0;
+    const uint8_t flags = status_flags(c);
+    uint16_t vcount = c->codec ? c->idr_counter : 0u;   /* codec session: the keyframe request counter */
     memcpy(&pkt[0], &frame_echo, 4); memcpy(&pkt[4], &vcount_echo, 2);
     memcpy(&pkt[6], &c->ack_frame, 4); memcpy(&pkt[10], &vcount, 2);
     pkt[12] = flags;
@@ -613,6 +699,68 @@ static void emit_frame(gmc_t *c, uint32_t frame_id, uint16_t vsync, uint8_t fiel
     send_status(c, frame_id, vsync);
 }
 
+/* --- native-width contract (CMD_NATIVE_SCALE) -------------------------------------------- */
+static uint32_t nat_kx(const gmc_t *c) { return c->native_kx ? c->native_kx : 1u; }
+static uint32_t nat_ky(const gmc_t *c) { return c->native_ky ? c->native_ky : 1u; }
+
+/* Clear bytes of one video payload: (width/kx) x (lines/ky) x 3, lines being the
+ * field height in 480i and the full height otherwise. */
+static uint32_t nat_cols(const gmc_t *c) { return c->native_w ? c->native_w : c->blit_w / nat_kx(c); }
+/* Source lines of one payload: native_h (halved per field in 480i) under a CMD_NATIVE_PLACE,
+ * else the lines of the mode over ky. */
+static uint32_t nat_lines(const gmc_t *c)
+{
+    if (c->native_h) return c->geom.interlaced ? c->native_h / 2u : c->native_h;
+    const uint32_t lines = c->geom.interlaced ? c->blit_lines_field : c->blit_lines_full;
+    return lines / nat_ky(c);
+}
+static size_t video_clear_bytes(const gmc_t *c)
+{
+    return (size_t)nat_cols(c) * nat_lines(c) * 3u;
+}
+
+/* Same refusals as the hardware receiver: no geometry, a factor that does not divide
+ * the width or the height, ky > 1 in 480i (repeating lines would break the field order). */
+static void apply_native_scale(gmc_t *c, const uint8_t *b)
+{
+    const uint32_t kx = b[1], ky = b[2];
+    if (!c->have_geom || c->geom.width % kx != 0u || c->geom.height % ky != 0u ||
+        (c->geom.interlaced && ky > 1u)) {
+        c->native_refused++;
+        if (c->evlog) fprintf(c->evlog, "{\"ev\":\"native_scale_refused\",\"kx\":%u,\"ky\":%u}\n", kx, ky);
+        return;
+    }
+    c->native_kx = (uint8_t)kx; c->native_ky = (uint8_t)ky;
+    c->native_w = c->native_h = c->native_xoff = c->native_yoff = 0;
+    if (c->pend_kind == PEND_VIDEO) c->pend_kind = PEND_NONE;   /* partial payload of the old size */
+    if (c->evlog) fprintf(c->evlog, "{\"ev\":\"native_scale\",\"kx\":%u,\"ky\":%u}\n", kx, ky);
+}
+
+/* CMD_NATIVE_PLACE: the picture travels at w x h, is enlarged by kx, ky and centred in the
+ * mode. Refused when it does not fit, in 480i with ky > 1 or an odd height -- except in a codec
+ * session, where the picture travels whole (no fields to keep in order). The canvas goes
+ * black: the borders are never redrawn. */
+static void apply_native_place(gmc_t *c, const uint8_t *b)
+{
+    const uint32_t kx = b[1], ky = b[2];
+    const uint32_t w = (uint32_t)b[3] | ((uint32_t)b[4] << 8), h = (uint32_t)b[5] | ((uint32_t)b[6] << 8);
+    if (!c->have_geom || (uint64_t)w * kx > c->geom.width || (uint64_t)h * ky > c->geom.height ||
+        (c->geom.interlaced && !c->codec && (ky > 1u || (h & 1u)))) {
+        c->native_refused++;
+        if (c->evlog) fprintf(c->evlog, "{\"ev\":\"native_place_refused\",\"kx\":%u,\"ky\":%u,\"w\":%u,\"h\":%u}\n", kx, ky, w, h);
+        return;
+    }
+    c->native_kx = (uint8_t)kx; c->native_ky = (uint8_t)ky;
+    c->native_w = w; c->native_h = h;
+    c->native_xoff = (c->geom.width  - w * kx) / 2u;
+    c->native_yoff = (c->geom.height - h * ky) / 2u;
+    if (c->pend_kind == PEND_VIDEO) c->pend_kind = PEND_NONE;
+    MTX_LOCK(&c->mtx);
+    if (c->canvas) memset(c->canvas, 0, (size_t)c->geom.width * c->geom.height * sizeof(uint32_t));
+    MTX_UNLOCK(&c->mtx);
+    if (c->evlog) fprintf(c->evlog, "{\"ev\":\"native_place\",\"kx\":%u,\"ky\":%u,\"w\":%u,\"h\":%u}\n", kx, ky, w, h);
+}
+
 /* --- geometry ----------------------------------------------------------------------- */
 static void apply_switchres(gmc_t *c, const uint8_t *b)
 {
@@ -623,6 +771,9 @@ static void apply_switchres(gmc_t *c, const uint8_t *b)
     if (h_active == 0 || v_active == 0 || h_active > GMC_MAX_W || v_active > GMC_MAX_H) { c->unknown_opcode++; return; }
 
     const uint32_t full_h = interlace ? (uint32_t)(v_active & ~1u) : v_active;
+    c->native_kx = 1; c->native_ky = 1;   /* every SWITCHRES starts again at full width */
+    c->native_w = c->native_h = c->native_xoff = c->native_yoff = 0;
+    c->codec_need_key = 1;
     const int changed = !c->have_geom || c->geom.width != h_active || c->geom.height != full_h || c->geom.interlaced != (interlace ? 1 : 0);
     c->switchres++;
     if (!changed) return;
@@ -660,14 +811,24 @@ static void apply_switchres(gmc_t *c, const uint8_t *b)
 static void rows_to_canvas(gmc_t *c, const uint8_t *rgb, uint32_t lines, uint32_t first_row, uint32_t row_step)
 {
     const uint32_t w = c->geom.width;
+    const uint32_t kx = nat_kx(c), ky = nat_ky(c), sw = nat_cols(c);
+    const uint32_t xoff = c->native_xoff, yoff = c->native_yoff;
     for (uint32_t r = 0; r < lines; r++) {
-        const uint32_t dst_row = first_row + r * row_step;
+        const uint32_t dst_row = yoff + first_row + r * ky * row_step;
         if (dst_row >= c->geom.height) break;
-        uint32_t *dst = c->canvas + (size_t)dst_row * w;
-        const uint8_t *src = rgb + (size_t)r * w * 3u;
-        for (uint32_t x = 0; x < w; x++, src += 3)
+        uint32_t *dst = c->canvas + (size_t)dst_row * w + xoff;
+        const uint8_t *src = rgb + (size_t)r * sw * 3u;
+        for (uint32_t x = 0; x < sw; x++, src += 3) {
+            if (xoff + (x + 1u) * kx > w) break;
             /* wire pixel = B, G, R (upstream order); canvas = 0x00RRGGBB */
-            dst[x] = ((uint32_t)src[2] << 16) | ((uint32_t)src[1] << 8) | (uint32_t)src[0];
+            const uint32_t px = ((uint32_t)src[2] << 16) | ((uint32_t)src[1] << 8) | (uint32_t)src[0];
+            for (uint32_t j = 0; j < kx; j++) dst[x * kx + j] = px;
+        }
+        for (uint32_t j = 1; j < ky; j++) {
+            const uint32_t row = dst_row + j * row_step;
+            if (row >= c->geom.height) break;
+            memcpy(c->canvas + (size_t)row * w + xoff, dst, (size_t)sw * kx * sizeof(uint32_t));
+        }
     }
 }
 
@@ -676,7 +837,7 @@ static void finish_video(gmc_t *c, uint64_t t_last_byte)
 {
     const uint64_t t0 = gmc_now_ns();
     const uint8_t *src = c->pend_buf;
-    const size_t clear = (size_t)c->blit_w * (c->geom.interlaced ? c->blit_lines_field : c->blit_lines_full) * 3u;
+    const size_t clear = video_clear_bytes(c);
 
     if (c->pend_is_delta) { c->deltas++; return; }               /* refused: GroovyMAME does not emit it, neither do we */
     if (c->pend_is_lz4) {
@@ -693,7 +854,7 @@ static void finish_video(gmc_t *c, uint64_t t_last_byte)
     }
 
     if (!c->geom.interlaced) {
-        rows_to_canvas(c, src, c->blit_lines_full, 0, 1);
+        rows_to_canvas(c, src, nat_lines(c), 0, 1);
         emit_frame(c, c->pend_frame_id, c->pend_vsync, 3, 0, 0, t_last_byte, t0);
         return;
     }
@@ -702,7 +863,7 @@ static void finish_video(gmc_t *c, uint64_t t_last_byte)
     if (c->pend_opcode == CMD_BLIT_VSYNC) {
         /* one field per send (GroovyMAME, gm_send_blit_half): parity = frame_id & 1 */
         const uint8_t field = (uint8_t)(c->pend_frame_id & 1u);
-        rows_to_canvas(c, src, c->blit_lines_field, field, 2);
+        rows_to_canvas(c, src, nat_lines(c), field, 2);
         c->half_fields++;
         c->half_seen |= (uint8_t)(1u << field);
         emit_frame(c, c->pend_frame_id, c->pend_vsync, 3, 0, 1, t_last_byte, t0);
@@ -716,7 +877,7 @@ static void finish_video(gmc_t *c, uint64_t t_last_byte)
         c->pair_active = 0; c->pair_fields = 0;
     }
     const uint8_t field = c->pend_field & 1u;
-    rows_to_canvas(c, src, c->blit_lines_field, field, 2);
+    rows_to_canvas(c, src, nat_lines(c), field, 2);
     c->pair_active = 1; c->pair_frame_id = c->pend_frame_id; c->pair_vsync = c->pend_vsync;
     c->pair_fields |= (uint8_t)(1u << field); c->pair_t_last_byte = t_last_byte;
     if (c->pair_fields == 3) {
@@ -778,7 +939,7 @@ static void finish_audio(gmc_t *c)
 static void start_video(gmc_t *c, uint8_t opcode, uint32_t frame_id, uint16_t vsync, uint8_t field, uint32_t lz4_size, int is_delta)
 {
     if (!c->have_geom || !c->pend_buf) { c->stray_payload++; return; }
-    const size_t clear = (size_t)c->blit_w * (c->geom.interlaced ? c->blit_lines_field : c->blit_lines_full) * 3u;
+    const size_t clear = video_clear_bytes(c);
     const size_t expected = lz4_size ? lz4_size : clear;
     if (expected == 0) { c->blit_empty++; return; }
     if (expected > c->pend_cap) { c->unknown_opcode++; return; }
@@ -796,6 +957,18 @@ static void handle_header(gmc_t *c, const uint8_t *b, size_t len)
         c->session_open = 1;
         c->padded = (len == 8u);   /* set by the received length */
         c->compressed = (b[1] == 1);
+        {
+            /* a codec session: padded only, and only for a codec this client takes */
+            const unsigned want = (b[1] == GMC_CODEC_H264) ? 1u : (b[1] == GMC_CODEC_HEVC) ? 2u : 0u;
+            const uint8_t codec = (want && c->padded && (c->cfg.codec_caps & want)) ? b[1] : 0u;
+            if (codec != c->codec) {
+                c->codec = codec;
+                if (codec && !c->srx) c->srx = gm_shard_rx_new();
+                if (c->srx) gm_shard_rx_reset(c->srx);
+                if (c->pend_kind == PEND_VIDEO) c->pend_kind = PEND_NONE;
+                c->codec_need_key = 1;
+            }
+        }
         c->audio_rate_code = b[2]; c->audio_channels = b[3];
         c->audio_announced = (b[2] != 0 && b[3] != 0);
         {
@@ -811,6 +984,12 @@ static void handle_header(gmc_t *c, const uint8_t *b, size_t len)
                 MTX_UNLOCK(&c->mtx);
             }
         }
+        /* Byte 4 of the 5-byte INIT is the pixel format; RGB565 / RGBA are not unpacked.
+         * Say so rather than read the picture as RGB888 without a word. */
+        if (len == 5u && b[4] != 0u) {
+            c->rgb_unsupported++;
+            if (c->evlog) fprintf(c->evlog, "{\"ev\":\"rgb_mode_unsupported\",\"rgb_mode\":%u}\n", b[4]);
+        }
         if (c->evlog) fprintf(c->evlog, "{\"ev\":\"init\",\"len\":%zu,\"compression\":%u,\"rate\":%u,\"channels\":%u,\"padded\":%d}\n", len, b[1], b[2], b[3], c->padded);
         break;
     case CMD_SWITCHRES:
@@ -820,6 +999,7 @@ static void handle_header(gmc_t *c, const uint8_t *b, size_t len)
         c->blit06++;
         const uint32_t frame_id = rd32(b + 1); const uint16_t vsync = rd16(b + 5);
         const uint32_t lz4 = (len == 11u) ? rd32(b + 7) : 0u;
+        if (c->codec) { c->codec_hdr_id = frame_id; c->codec_hdr_vsync = vsync; break; }   /* the shards follow, not an arrival-order payload */
         start_video(c, CMD_BLIT_VSYNC, frame_id, vsync, 0, lz4, 0);
         break; }
     case CMD_BLIT_FIELD_VSYNC: {
@@ -854,6 +1034,16 @@ static void handle_header(gmc_t *c, const uint8_t *b, size_t len)
         if (c->evlog) fprintf(c->evlog, "{\"ev\":\"close\"}\n");
         break;
     case CMD_GET_VERSION:
+        /* Answered like the receiver's daemon, by the 13-byte status: the
+         * emitter asks its master once at opening and, from that shape, keeps
+         * the crt-bridge dialect this client was written for. */
+        send_status(c, c->pair_active ? c->pair_frame_id : c->pend_frame_id, c->pend_vsync);
+        break;
+    case CMD_NATIVE_SCALE:
+        apply_native_scale(c, b);
+        break;
+    case CMD_NATIVE_PLACE:
+        apply_native_place(c, b);
         break;
     default:
         c->unknown_opcode++;
@@ -866,6 +1056,110 @@ static void handle_header(gmc_t *c, const uint8_t *b, size_t len)
  *   C = payload chunk that COMPLETES the block (video or audio)
  *   E = header arrived while a block was in progress: escape, block dropped, header handled
  *   S = stray payload (no block in progress, and this is not a header) */
+/* The decoder has no reference: ask the emitter for a keyframe. At most every 100 ms, and the status goes out at
+ * once (it also rides on every later one). */
+static void codec_request_idr(gmc_t *c, uint64_t now)
+{
+    if (c->idr_wait_since_ns == 0u) c->idr_wait_since_ns = now;
+    if (c->idr_counter != 0u || c->idr_requests != 0u) {
+        if (now - c->idr_last_ns < 100000000ULL) return;
+    }
+    c->idr_counter++;
+    c->idr_requests++;
+    c->idr_last_ns = now;
+    if (c->evlog) fprintf(c->evlog, "{\"ev\":\"codec_idr_request\",\"n\":%u}\n", (unsigned)c->idr_counter);
+    send_status(c, 0, 0);
+}
+
+/* Gate of a codec frame: a decoder that lost its reference takes nothing until the next keyframe. Returns 1 when the
+ * frame can be decoded. Shared by the sink and the VideoToolbox paths; it is the whole recovery logic. */
+static int codec_gate(gmc_t *c, const gmc_codec_frame *f, uint64_t now)
+{
+    if (f->gap) c->codec_need_key = 1;
+    if (c->codec_need_key && !f->keyframe) { c->codec_waiting_key++; codec_request_idr(c, now); return 0; }
+    if (f->keyframe && c->codec_need_key) {
+        c->codec_need_key = 0;
+        if (c->idr_wait_since_ns) {
+            if (c->idr_recover_n < 64u) c->idr_recover_ns[c->idr_recover_n++] = now - c->idr_wait_since_ns;
+            c->idr_wait_since_ns = 0u;
+        }
+    }
+    return 1;
+}
+
+#ifdef GMC_HAVE_DEC
+/* One decoded picture (sw x sh, XRGB) into the canvas, enlarged by the announced factors and centred at
+ * the announced offsets: the same placement as rows_to_canvas, from 32-bit pixels. */
+static void xrgb_to_canvas(gmc_t *c, const uint32_t *src, uint32_t sw, uint32_t sh)
+{
+    const uint32_t w = c->geom.width, kx = nat_kx(c), ky = nat_ky(c);
+    const uint32_t xoff = c->native_xoff, yoff = c->native_yoff;
+    for (uint32_t r = 0; r < sh; r++) {
+        const uint32_t dst_row = yoff + r * ky;
+        if (dst_row >= c->geom.height) break;
+        uint32_t *dst = c->canvas + (size_t)dst_row * w + xoff;
+        for (uint32_t x = 0; x < sw; x++) {
+            if (xoff + (x + 1u) * kx > w) break;
+            for (uint32_t j = 0; j < kx; j++) dst[x * kx + j] = src[(size_t)r * sw + x];
+        }
+        for (uint32_t j = 1; j < ky; j++) {
+            const uint32_t row = dst_row + j;
+            if (row >= c->geom.height) break;
+            memcpy(c->canvas + (size_t)row * w + xoff, dst, (size_t)sw * kx * sizeof(uint32_t));
+        }
+    }
+}
+
+/* A codec frame with no external sink: decode it and show it. A decoder that lost its reference
+ * (a frame skipped, a new mode) shows nothing until the next keyframe rather than garbage. */
+static void codec_decode_to_canvas(gmc_t *c, const gmc_codec_frame *f, uint64_t t_arrival)
+{
+    const uint64_t t0 = gmc_now_ns();
+    unsigned dw = 0, dh = 0;
+    if (!c->have_geom) return;
+    if (f->undecodable) return;
+    if (c->dec == GMC_DEC_NONE) { c->codec_decode_err++; return; }
+#ifdef GMC_HAVE_VT
+    if (c->dec == GMC_DEC_VT && !c->vt) c->vt = gmc_vt_open(f->codec);
+    if (c->dec == GMC_DEC_VT && !c->vt) { c->codec_decode_err++; return; }
+#endif
+#ifdef GMC_HAVE_FF
+    if (c->dec == GMC_DEC_FF && !c->ff) c->ff = gmc_ff_open(f->codec);
+    if (c->dec == GMC_DEC_FF && !c->ff) { c->codec_decode_err++; return; }
+#endif
+    {
+        const size_t need = (size_t)c->geom.width * c->geom.height;
+        if (need > c->vt_buf_px) {
+            free(c->vt_buf);
+            c->vt_buf = (uint32_t *)malloc(need * sizeof(uint32_t));
+            c->vt_buf_px = c->vt_buf ? need : 0;
+        }
+    }
+    if (!c->vt_buf) { c->codec_decode_err++; return; }
+    int r = -1;
+#ifdef GMC_HAVE_VT
+    if (c->dec == GMC_DEC_VT) r = gmc_vt_decode(c->vt, f->data, f->len, c->vt_buf, c->vt_buf_px, &dw, &dh);
+#endif
+#ifdef GMC_HAVE_FF
+    if (c->dec == GMC_DEC_FF) r = gmc_ff_decode(c->ff, f->data, f->len, c->vt_buf, c->vt_buf_px, &dw, &dh);
+#endif
+    if (r < 0) { c->codec_decode_err++; c->codec_need_key = 1; codec_request_idr(c, gmc_now_ns()); return; }
+    if (r == 0) return;
+    {
+        const uint32_t want_w = nat_cols(c);
+        const uint32_t want_h = c->native_h ? c->native_h : c->blit_lines_full / nat_ky(c);
+        if (dw != want_w || dh != want_h) {
+            c->codec_size_mismatch++;
+            if (c->evlog) fprintf(c->evlog, "{\"ev\":\"codec_size_mismatch\",\"got_w\":%u,\"got_h\":%u,\"want_w\":%u,\"want_h\":%u}\n", dw, dh, want_w, want_h);
+            return;
+        }
+    }
+    xrgb_to_canvas(c, c->vt_buf, dw, dh);
+    c->codec_decoded++;
+    emit_frame(c, f->frame_id, c->codec_hdr_vsync, 3, 0, 0, t_arrival, t0);
+}
+#endif /* GMC_HAVE_DEC */
+
 static char handle_datagram_inner(gmc_t *c, const uint8_t *b, size_t len, uint64_t t_arrival)
 {
     c->datagrams++; c->bytes += len;
@@ -918,6 +1212,28 @@ static char handle_datagram_inner(gmc_t *c, const uint8_t *b, size_t len, uint64
         c->pend_kind = PEND_NONE;
         outcome = 'E';
     } else if (!is_command_header(b, len, c->compressed, c->padded)) {
+        if (c->codec && c->srx) {
+            gm_shard_frame sf;
+            const int r = gm_shard_rx_push(c->srx, b, len, &sf);
+            if (r == 1) {
+                gmc_codec_frame cf;
+                cf.frame_id = sf.gid;   /* the Groovy id, recovered with the frame; the shard id is only the stream's own counter */
+                c->codec_hdr_vsync = sf.vsync;
+                cf.codec = c->codec;
+                cf.keyframe = (sf.flags & GM_SHARD_F_KEY) != 0;
+                cf.data = sf.data; cf.len = sf.len;
+                cf.recovered = sf.recovered; cf.gap = sf.gap;
+                c->codec_frames++;
+                cf.undecodable = !codec_gate(c, &cf, t_arrival ? t_arrival : gmc_now_ns());
+                if (c->cfg.codec_sink) c->cfg.codec_sink(c->cfg.codec_user, &cf);
+#ifdef GMC_HAVE_DEC
+                else codec_decode_to_canvas(c, &cf, t_arrival);
+#endif
+                return 'K';
+            }
+            if (r < 0) c->codec_stray++;
+            return 'k';
+        }
         c->stray_payload++;
         return 'S';
     }
@@ -1068,6 +1384,11 @@ void gmc_config_defaults(gmc_config *cfg)
 {
     memset(cfg, 0, sizeof *cfg);
     cfg->port = 32100; cfg->target_depth = 1; cfg->ring_capacity = 8; cfg->send_status = 1;
+#ifdef GMC_HAVE_DEC
+    /* H.264 through VideoToolbox or a loaded libavcodec (GMC_DECODER); 0 when the one asked for is
+     * not there. HEVC comes with its own slice. */
+    if (gmc_dec_pick() != GMC_DEC_NONE) cfg->codec_caps = 1u;
+#endif
 }
 
 /* The local address the video socket listens on. GMC_BIND unset or empty: every
@@ -1101,6 +1422,9 @@ gmc_t *gmc_open(const gmc_config *cfg)
     gmc_t *c = (gmc_t *)calloc(1, sizeof *c);
     if (!c) return NULL;
     c->cfg = *cfg;
+#ifdef GMC_HAVE_DEC
+    c->dec = gmc_dec_pick();
+#endif
     c->input = cfg->input_chan;   /* set BEFORE the thread starts */
     if (c->cfg.ring_capacity < c->cfg.target_depth + 2) c->cfg.ring_capacity = c->cfg.target_depth + 2;
     c->cap = c->cfg.ring_capacity;
@@ -1340,6 +1664,16 @@ void gmc_close(gmc_t *c)
     if (c->slots) for (unsigned i = 0; i < c->cap; i++) free(c->slots[i].f.xrgb);
     free(c->slots); free(c->ready); free(c->depth_hist);
     free(c->canvas); free(c->scratch); free(c->pend_buf);
+    gm_shard_rx_free(c->srx);
+#ifdef GMC_HAVE_VT
+    gmc_vt_close(c->vt);
+#endif
+#ifdef GMC_HAVE_FF
+    gmc_ff_close(c->ff);
+#endif
+#ifdef GMC_HAVE_DEC
+    free(c->vt_buf);
+#endif
     free(c->lat_last_byte.v); free(c->lat_ready.v); free(c->decode_us.v); free(c->present_interval.v); free(c->ring_wait.v);
     free(c->emit_lock_us.v); free(c->acquire_wait_us.v); free(c->audio_pull.v);
     audio_free(c);

@@ -15,6 +15,15 @@ picture, sound, cadence and gamepad all work end to end; on Linux, the core inst
 and receives picture and sound over Wi-Fi with Padded Session On, but the full frame rate on
 screen has not yet been confirmed on that platform (see below).
 
+## H.264 video
+
+Since 0.3.0 the core can also receive the picture as H.264 video, when the emitter offers it in
+a padded session. On macOS it decodes with VideoToolbox, part of the system. On Windows and
+Linux it decodes with FFmpeg's libavcodec, **not included**: the core loads it at start-up if
+it is installed on the machine (nothing of FFmpeg is linked into the core). Without it, the
+core does not offer H.264 and the emitter keeps sending compressed pixels, as before. Which
+versions are accepted, and how to point the core at them on Windows: `INSTALL.md`, section 7.
+
 ## Install
 
 See `INSTALL.md` for step-by-step instructions for Windows, macOS and Linux. Requires
@@ -65,7 +74,9 @@ Requires a C compiler and GNU Make.
 make
 ```
 
-Builds the core and its `.info` file into `build/`. `make test` runs the unit tests;
+Builds the core and its `.info` file into `build/`. No FFmpeg is needed to build: the
+libavcodec decoder (Windows and Linux) is compiled in without any FFmpeg header, and the
+library is looked up at run time. `make test` runs the unit tests;
 `make test-frozen-run` runs the frozen-run smoke test; `make print-version` prints the core's
 version.
 

@@ -51,6 +51,22 @@ typedef struct {
     uint32_t generation;
 } gmc_geom;
 
+/* One codec frame: the bitstream of ONE access unit, put back together from its
+ * shards. valid during the call only. */
+typedef struct {
+    uint32_t       frame_id;      /* the Groovy frame_id of the picture, recovered with the frame itself */
+    uint8_t        codec;         /* 0x10 H.264, 0x11 HEVC (the session's)           */
+    int            keyframe;      /* starts a decodable sequence                     */
+    const uint8_t *data;
+    size_t         len;
+    unsigned       recovered;     /* data shards rebuilt from the parity              */
+    unsigned       gap;           /* frames skipped since the previous one: the decoder
+                                     lost its reference and wants a keyframe          */
+    int            undecodable;   /* 1 = the decoder has no reference (after a gap, an error, a new mode) and this is not a
+                                     keyframe: do not decode it; the client has already asked the emitter for one */
+} gmc_codec_frame;
+typedef void (*gmc_codec_sink)(void *user, const gmc_codec_frame *f);
+
 typedef struct {
     unsigned    port;             /* 32100 by default                              */
     unsigned    target_depth;     /* 0..4 frames kept in reserve                   */
@@ -70,6 +86,13 @@ typedef struct {
      * race it. Deliberately an incomplete type -- this header must not depend
      * on gmclient_input.h. */
     struct gmc_input *input_chan; /* NULL = no input channel (default)             */
+    /* Codec session (padded session, CMD_INIT compression 0x10 / 0x11). The codecs this
+     * client takes: bit 0 = H.264, bit 1 = HEVC (0 = none, the default: a codec INIT is then
+     * not followed and the status raises no capability bit). Each frame put back together is
+     * handed to codec_sink; the decoder behind it is the sink's business. */
+    unsigned        codec_caps;
+    gmc_codec_sink  codec_sink;
+    void           *codec_user;
 } gmc_config;
 
 /* Sensible defaults in *cfg. */

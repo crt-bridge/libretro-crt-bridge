@@ -48,3 +48,11 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Not included: FFmpeg (libavcodec, libavutil)
+
+On Windows and Linux the core loads FFmpeg's libavcodec and libavutil at run time, if they are
+installed on the machine, to decode H.264 video. No FFmpeg file is distributed with this
+project, and no FFmpeg code or header is compiled or linked into it. FFmpeg is the work of its
+own authors, licensed under the GNU LGPL version 2.1 or later, or the GNU GPL when built with
+its GPL options: see https://ffmpeg.org/legal.html.

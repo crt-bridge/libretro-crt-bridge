@@ -48,6 +48,9 @@ CORE_SHARED_FLAGS := -shared
 CORE_LDLIBS       := -lws2_32 -lwinmm -static-libgcc
 TEST_LDLIBS       := -lws2_32 -lwinmm
 FROZEN_LDLIBS     := -lpthread
+# H.264 through a libavcodec loaded at run time (src/codec_ff.c), see
+# CORE_DEFS below: LoadLibraryExW comes from kernel32, nothing more to link.
+CORE_DEFS         := -DGMC_HAVE_FF
 else ifeq ($(UNAME),Darwin)
 PLATFORM          := macos
 # `CC ?= clang` is a no-op -- GNU Make's own built-in default for CC
@@ -65,9 +68,16 @@ endif
 ARCHS             := -arch arm64 -arch x86_64 -mmacosx-version-min=11.0
 CORE_EXT          := dylib
 CORE_SHARED_FLAGS := -dynamiclib
-CORE_LDLIBS       := -lpthread
-TEST_LDLIBS       := -lpthread
+# src/gmclient.c includes src/codec_vt.c on every Apple build (H.264 through
+# VideoToolbox), so the core AND every test that includes gmclient.c link
+# these system frameworks -- nothing third-party.
+VT_FRAMEWORKS     := -framework VideoToolbox -framework CoreMedia \
+                     -framework CoreVideo -framework CoreFoundation
+CORE_LDLIBS       := -lpthread $(VT_FRAMEWORKS)
+TEST_LDLIBS       := -lpthread $(VT_FRAMEWORKS)
 FROZEN_LDLIBS     := -lpthread
+# VideoToolbox is the decoder here: no libavcodec path in the macOS core.
+CORE_DEFS         :=
 else ifeq ($(UNAME),Linux)
 PLATFORM          := linux
 ifeq ($(origin CC),default)
@@ -80,11 +90,16 @@ endif
 # a build REQUIREMENT (the same point made about CFLAGS above) -- ALL_CFLAGS, never the caller's
 # overridable CFLAGS.
 ALL_CFLAGS        += -D_POSIX_C_SOURCE=200809L
+# realpath() (src/codec_ff.c, loading libavcodec) is XSI: it needs
+# _XOPEN_SOURCE on top of the POSIX level above. Same requirement standing.
+ALL_CFLAGS        += -D_XOPEN_SOURCE=700
 CORE_EXT          := so
 CORE_SHARED_FLAGS := -fPIC -shared
-CORE_LDLIBS       := -lpthread
+# -ldl: dlopen/dlsym, which the libavcodec loader (CORE_DEFS below) calls.
+CORE_LDLIBS       := -lpthread -ldl
 TEST_LDLIBS       := -lpthread
 FROZEN_LDLIBS     := -lpthread -ldl
+CORE_DEFS         := -DGMC_HAVE_FF
 else
 PLATFORM          := unknown
 endif
@@ -112,14 +127,22 @@ print-version:
 # command, never precompiled into its own object file: a universal (arm64 +
 # x86_64) macOS build needs every object it links to carry both slices, and a
 # single .o built once and reused would only ever hold one.
+#
+# src/gmclient.c includes src/gm_shard.c (the codec session transport),
+# src/codec_vt.c on Apple and src/codec_ff.c under GMC_HAVE_FF: they are
+# compiled inside that one unit, never passed on their own, hence CORE_DEPS
+# only. CORE_DEFS turns on the libavcodec decoder (Windows and Linux) for the
+# core alone: the unit tests stay the same on a machine with or without
+# FFmpeg installed.
 CORE_SRCS := src/core/crt_bridge_libretro.c src/gmclient.c src/gmclient_input.c deps/lz4.c
 CORE_DEPS := src/core/crt_bridge_libretro.c src/core/crt_bridge_version.h \
              src/core/loss_hint.h src/gmclient.c src/gmclient.h \
              src/gmclient_input.c src/gmclient_input.h src/gmc_mtx.h \
+             src/gm_shard.c src/gm_shard.h src/codec_vt.c src/codec_ff.c \
              deps/lz4.c deps/lz4.h include/libretro.h
 
 $(CORE_LIB): $(CORE_DEPS) | $(BUILD)
-	$(CC) $(ALL_CFLAGS) $(ARCHS) $(CORE_SHARED_FLAGS) -o $@ $(CORE_SRCS) $(CORE_LDLIBS)
+	$(CC) $(ALL_CFLAGS) $(CORE_DEFS) $(ARCHS) $(CORE_SHARED_FLAGS) -o $@ $(CORE_SRCS) $(CORE_LDLIBS)
 
 # Depends on the version header too -- a rule that only named the
 # .info.in template rebuilt the DLL (which depends on the header, via
@@ -140,10 +163,10 @@ $(CORE_INFO): crt_bridge_libretro.info.in src/core/crt_bridge_version.h | $(BUIL
 $(BUILD)/test_gmclient_input: test/test_gmclient_input.c src/gmclient_input.c src/gmclient_input.h src/gmc_mtx.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) $(ARCHS) -o $@ test/test_gmclient_input.c $(TEST_LDLIBS)
 
-$(BUILD)/test_gmclient_audio: test/test_gmclient_audio.c src/gmclient.c src/gmclient.h deps/lz4.c deps/lz4.h | $(BUILD)
+$(BUILD)/test_gmclient_audio: test/test_gmclient_audio.c src/gmclient.c src/gmclient.h src/gm_shard.c src/gm_shard.h src/codec_vt.c deps/lz4.c deps/lz4.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) $(ARCHS) -o $@ test/test_gmclient_audio.c deps/lz4.c $(TEST_LDLIBS)
 
-$(BUILD)/test_gmclient_padding: test/test_gmclient_padding.c src/gmclient.c src/gmclient.h deps/lz4.c deps/lz4.h | $(BUILD)
+$(BUILD)/test_gmclient_padding: test/test_gmclient_padding.c src/gmclient.c src/gmclient.h src/gm_shard.c src/gm_shard.h src/codec_vt.c deps/lz4.c deps/lz4.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) $(ARCHS) -o $@ test/test_gmclient_padding.c deps/lz4.c $(TEST_LDLIBS)
 
 $(BUILD)/test_loss_hint: test/test_loss_hint.c src/core/loss_hint.h | $(BUILD)

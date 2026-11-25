@@ -30,8 +30,8 @@ the core runs but shows no settings at all. Check your version from
 `Main Menu > Information > System Information`, or by running RetroArch with `--version` from a
 terminal.
 
-The archive names are `crt-bridge-client-v0.2.0-windows-x64.zip`,
-`crt-bridge-client-v0.2.0-linux-x64.tar.gz`, and `crt-bridge-client-v0.2.0-macos-universal.zip`.
+The archive names are `crt-bridge-client-v0.3.0-windows-x64.zip`,
+`crt-bridge-client-v0.3.0-linux-x64.tar.gz`, and `crt-bridge-client-v0.3.0-macos-universal.zip`.
 The macOS archive is a universal binary: the Apple Silicon (arm64) slice is proven on real
 hardware; the Intel (x86_64) slice is built the same way but has not been tested on real Intel
 hardware. Both slices target macOS 11 or later.
@@ -171,6 +171,26 @@ shown under `Settings > Directory > System Event Logs`, and it holds a line cont
 Each of these can be overridden by an environment variable, and the variable wins over the menu.
 When that happens the core says so on screen, naming the variable - see the "Something is
 wrong" table below.
+
+### H.264 video (optional)
+
+The emitter can send the picture as H.264 video instead of compressed pixels, in a padded
+session only. This core tells the emitter whether it can decode H.264; when it cannot, the
+emitter keeps sending compressed pixels, as before. The picture works either way.
+
+- **macOS:** decoding uses VideoToolbox, part of the system. Nothing to install.
+- **Windows and Linux:** decoding uses FFmpeg's libavcodec, which is **not included** in the
+  archive. The core looks for it once, when it starts, and uses it only if it finds it. Only
+  libavcodec 61 with libavutil 59 (FFmpeg 7.1), or libavcodec 63 with libavutil 61, are
+  accepted; any other version is refused, even if present.
+  - **Linux:** the system loader finds your distribution's package, if its version is one of
+    the two above (Debian 13, for example, ships FFmpeg 7.1).
+  - **Windows:** only the system folder is searched. Set the environment variable
+    `GMC_FFMPEG_DIR` to the full path of a folder holding `avcodec-61.dll` and `avutil-59.dll`
+    (or `avcodec-63.dll` and `avutil-61.dll`), for example from a "shared" FFmpeg build, then
+    start RetroArch.
+- **Without it:** no error and no message. The core simply does not offer H.264, and the
+  emitter keeps sending compressed pixels.
 
 ## 8. The run report
 
